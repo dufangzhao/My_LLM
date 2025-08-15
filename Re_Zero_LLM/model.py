@@ -32,12 +32,13 @@ class LayerNorm(nn.Module):
 class CausalSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
-        assert config.n_embd % config.n_head == 0
-        self.qkv_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias)  # qkv合并为一个大矩阵，方便计算
-        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)  # output projection
+        assert config.n_embed % config.n_head == 0
+        self.qkv_attn = nn.Linear(config.n_embed, 3 * config.n_embed, bias=config.bias)  # qkv合并为一个大矩阵，方便计算
+        self.c_proj = nn.Linear(config.n_embed, config.n_embed, bias=config.bias)  # output projection
         self.resid_dropout = nn.Dropout(config.dropout)
         self.n_head = config.n_head
         self.n_embed = config.n_embed
+        # 记得有一篇论文说head_size要等于seq_length才合理
         self.head_size = config.n_embed // config.n_head
 
     def forward(self, x):
@@ -49,7 +50,7 @@ class CausalSelfAttention(nn.Module):
         y = F.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.attn_dropout if self.training else 0,
                                            is_causal=True)  # is_causal为因果掩码，即当前位置之前的位置不能被访问
         # (B, nh, T, hs) * (B, nh, hs, T) -> (B, nh, T, T)  q * k.T/sqrt(hs)
-        # (B, nh, T, T)  * (B, nh, T, hs) -> (B, nh, T, hs)  q * k.T * v
+        # (B, nh, T, T)  * (B, nh, T, hs) -> (B, nh, T, hs)  y = (q * k.T/sqrt(hs)) * v
         y.transpose(1, 2).contiguous().view(B, T, C)  # (B, T, nh, hs) -> (B,T,C)
         y = self.resid_dropout(self.c_proj(y))  # (B,T,C)
         return y
@@ -111,7 +112,7 @@ class GPT(nn.Module):
         self.apply(self._init_weights)  # linear 和 embedding 初始化
         for pname, p in self.named_parameters():
             num_params += p.numel()
-            if pname.endswith('bias'):
+            if pname.endswith('bias'): # _init_weight中只是先置零，这里精细调整偏置
                 nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer))
         print(f'模型参数量为：{num_params}')
 
@@ -138,8 +139,8 @@ class GPT(nn.Module):
         # target= True 表示模型正在训练阶段，需要回传loss
         # logits取最后一个（-1）即生成出来的东西，这样和目标的一个token维度相同，才好计算损失
         if targets is not None:  # 训练阶段
-            logits = self.lm_head(x)
-            # (vocab_size),(vocab_size) 忽略标签-1, 计算交叉熵损失
+            logits = self.lm_head(x) # (B,T,vocab_size)
+            # (B*T,vocab_size),(B*T,) 忽略标签-1, 计算交叉熵损失
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
         else:  # 预测阶段
             logits = self.lm_head(x)
